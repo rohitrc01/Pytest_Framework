@@ -258,7 +258,7 @@ def execute_tc(row: dict) -> dict:
         operation = row.get("Operation", "POST").strip().upper()
         res_id_input = str(row.get("id", "")).strip()
 
-        if operation in ("PUT", "DELETE") and res_id_input:
+        if res_id_input:
             url = f"{api_url.rstrip('/')}/{res_id_input}"
         else:
             url = api_url
@@ -361,6 +361,7 @@ def execute_tc(row: dict) -> dict:
             else:
                 result[ERR_FLD] = "Expected fail but got HTTP 200"
     except Exception as e:
+        result[STATUS_FLD] = "FAIL"
         result[ERR_FLD] = str(e)
     return result
 
