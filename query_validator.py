@@ -1,10 +1,8 @@
 import os
 import json
 import logging
-import io
 import pandas as pd
-import requests
-from utilities import logger, BASE_URL
+from utilities import logger
 
 # OpenSpecimen query export CSVs typically contain 3 rows of metadata before the header.
 SKIP_ROWS = 3
@@ -44,29 +42,15 @@ def validate_export(df_ref: pd.DataFrame, df_export: pd.DataFrame) -> tuple[str,
     except Exception as e:
         return "ERROR", f"CSV comparison error: {e}"
 
-def execute_query_workflow(tc_id: str, saved_query_id: str, headers: dict, reference_csv_path: str) -> tuple[str, str, dict]:
-    """Fetches query results directly and validates against reference CSV."""
-    metrics = {"Passed": 0, "Failed": 0, "Warnings": 0}
+def validate_query_response(tc_id: str, resp_data: dict, reference_csv_path: str) -> tuple[str, str]:
+    """Validates the POST response JSON from OpenSpecimen query API against a reference CSV.
+    
+    The HTTP POST is performed by execute_tc (like all other modules).
+    This function only handles the post-response validation step.
+    """
     try:
-        url = f"{BASE_URL}/query/{saved_query_id}"
-        logger.info(f"[{tc_id}] Executing query via POST to {url}...")
-        
-        # Using the specific payload structure required by OpenSpecimen
-        payload = {
-            "drivingForm": "Participant",
-            "joinNodes": [],
-            "wideRowMode": "DEEP",
-            "startAt": 0,
-            "maxResults": 3000
-        }
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        
-        # Extract JSON rather than expecting a raw CSV string
-        data = resp.json()
-        
-        column_labels = data.get("columnLabels", [])
-        rows = data.get("rows", [])
+        column_labels = resp_data.get("columnLabels", [])
+        rows = resp_data.get("rows", [])
         
         # OpenSpecimen's CSV generator natively replaces "# " with "_" in column headers.
         # Since we are fetching the raw JSON, we replicate that normalization here.
@@ -79,22 +63,9 @@ def execute_query_workflow(tc_id: str, saved_query_id: str, headers: dict, refer
         try:
             df_ref = pd.read_csv(reference_csv_path, skiprows=SKIP_ROWS)
         except Exception as e:
-            return "FAIL", f"CSV comparison error: Reference file empty or invalid - {e}", metrics
+            return "FAIL", f"CSV comparison error: Reference file empty or invalid - {e}"
             
-        status, message = validate_export(df_ref, df_export)
+        return validate_export(df_ref, df_export)
         
-        if status != "PASS":
-            metrics["Failed"] += 1
-            return "FAIL", message, metrics
-            
-        metrics["Passed"] += 1
-        return "PASS", "Data match", metrics
-        
-    except requests.exceptions.RequestException as e:
-        status_code = getattr(e.response, "status_code", "N/A")
-        server_response = getattr(e.response, "text", "")
-        return "FAIL", f"API Error (HTTP {status_code}): {e} | Response: {server_response}", metrics
-    except json.JSONDecodeError:
-        return "FAIL", f"API Error: Expected JSON response but received raw text.", metrics
     except Exception as e:
-        return "ERROR", f"Workflow Error: {e}", metrics
+        return "ERROR", f"Workflow Error: {e}"

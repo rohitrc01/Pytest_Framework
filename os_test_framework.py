@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional
 from utilities import logger, BASE_URL, get_token, CSVLogger, fetch_original_state, cleanup_or_revert_api_resource, \
     STATUS_FLD, VALID_STAT_FLD, ERR_FLD, HTTP_CODE_FLD, QUERY_TC_DATA_DIR
-from query_validator import execute_query_workflow
+from query_validator import validate_query_response
 
 # Load externalized messages
 MSG_FILE = os.path.join(os.path.dirname(__file__), "messages.json")
@@ -284,24 +284,6 @@ def execute_tc(row: dict) -> dict:
             resp = requests.put(url, headers=headers, json=payload, timeout=15)
         elif operation == "DELETE":
             resp = requests.delete(url, headers=headers, timeout=15)
-        elif operation == "EXPORT":
-            saved_query_id = row.get("id", "").strip()
-            ref_file = row.get("File_info", "").strip()
-            if not saved_query_id:
-                raise ValueError("No 'id' (savedQueryId) provided for EXPORT operation. Ensure the 'id' column is filled.")
-            
-            # Robustly locate the reference CSV inside the extracted tree
-            from pathlib import Path
-            found_paths = list(Path(QUERY_TC_DATA_DIR).rglob(ref_file))
-            if not found_paths:
-                raise ValueError(f"Reference file not found in {QUERY_TC_DATA_DIR}: {ref_file}")
-
-            status, err_msg, metrics = execute_query_workflow(row.get("TC_ID", "UNKNOWN"), saved_query_id, headers, str(found_paths[0]))
-            result[HTTP_CODE_FLD] = 200 if status == "PASS" else 400
-            result[VALID_STAT_FLD] = status
-            result[ERR_FLD] = err_msg
-            result[STATUS_FLD] = status
-            return result
         else:
             raise ValueError(f"Unsupported operation: {operation}")
         
@@ -321,20 +303,36 @@ def execute_tc(row: dict) -> dict:
             if resp.ok:
                 result["TC_Status"] = "PASS"
                 if operation != "DELETE":
-                    res_id = resp_body.get("id") if isinstance(resp_body, dict) else None
-                    if not res_id and res_id_input:
-                        res_id = res_id_input
+                    ref_file = row.get("File_info", "").strip()
 
-                    if res_id:
-                        # Optimized: Pass the POST response body to skip redundant GET if possible
-                        v_stat, v_diff = deep_validate(res_id, payload, headers, api_url, actual_response=resp_body if isinstance(resp_body, dict) else None, items_url_template=items_url_template)
+                    if ref_file:
+                        # Query validation: compare POST response JSON against reference CSV
+                        from pathlib import Path
+                        found_paths = list(Path(QUERY_TC_DATA_DIR).rglob(ref_file))
+                        if not found_paths:
+                            raise ValueError(f"Reference file not found in {QUERY_TC_DATA_DIR}: {ref_file}")
+                        v_stat, v_diff = validate_query_response(
+                            row.get("TC_ID", "UNKNOWN"), resp_body, str(found_paths[0])
+                        )
                         result[VALID_STAT_FLD] = v_stat
-                        if v_stat != "Pass": 
+                        if v_stat != "PASS":
                             result[STATUS_FLD] = "FAIL"
                             result[ERR_FLD] = v_diff
-                        
-                        # Teardown / Cleanup
-                        cleanup_or_revert_api_resource(operation, api_url, headers, res_id, original_state)
+                    else:
+                        res_id = resp_body.get("id") if isinstance(resp_body, dict) else None
+                        if not res_id and res_id_input:
+                            res_id = res_id_input
+
+                        if res_id:
+                            # Optimized: Pass the POST response body to skip redundant GET if possible
+                            v_stat, v_diff = deep_validate(res_id, payload, headers, api_url, actual_response=resp_body if isinstance(resp_body, dict) else None, items_url_template=items_url_template)
+                            result[VALID_STAT_FLD] = v_stat
+                            if v_stat != "Pass": 
+                                result[STATUS_FLD] = "FAIL"
+                                result[ERR_FLD] = v_diff
+                            
+                            # Teardown / Cleanup
+                            cleanup_or_revert_api_resource(operation, api_url, headers, res_id, original_state)
             else:
                 if isinstance(resp_body, list) and all(isinstance(e, dict) and "code" in e for e in resp_body):
                     codes = ", ".join([f"{e.get('code')} ({e.get('message', 'No message')})" for e in resp_body])
